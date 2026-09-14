@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+data/
+runs/
+artifacts/
+site-environment.json
+requirements-site.txt
+.env*
+.codex/
+AGENTS.md
+*.partial

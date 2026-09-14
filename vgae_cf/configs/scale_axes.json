@@ -1,0 +1,13 @@
+{
+  "baseline": {"id": "baseline", "width": 126, "depths": [2, 2, 1], "latent": 1},
+  "center": {"width": 512, "depths": [4, 4, 2], "latent": 4},
+  "axes": {
+    "width": [256, 512, 1024],
+    "depths": [[2, 2, 1], [4, 4, 2], [8, 8, 4]],
+    "latent": [1, 2, 4, 8]
+  },
+  "screen_seed": 0,
+  "confirmation_seeds": [1, 2],
+  "confirmation_expansion_count": 2,
+  "maximum_formal_runs": 15
+}

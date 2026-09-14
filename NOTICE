@@ -1,0 +1,22 @@
+VGAE CylinderFlow stride-8
+Copyright 2026 the repository contributors.
+Licensed under the Apache License, Version 2.0; see LICENSE.
+
+This repository includes DGN4CFD graph-autoencoder, message-passing, mesh,
+normalization and batching code originating from:
+  https://github.com/tum-pbs/dgn4cfd
+and the CylinderFlow adaptation in:
+  https://github.com/yan-borui/graph-dit-cylinderflow-stride8
+  Source revision: e139e24046b387e32dc816800fed92b53bbb3e21
+
+The bundled dgn4cfd package retains the upstream VGAE/message-passing and
+Guillard coarsening implementation. The base Model and Graph wrappers have
+been reduced to the standalone dependency surface, and public exports and
+formatting have been adjusted. The vgae_cf package supplies UV adaptation,
+physical metrics adapted from the CylinderFlow evaluator, four-GPU training,
+checkpointing, evaluation, representation export, and campaign management.
+No pretrained upstream model weights are bundled or loaded for training.
+
+Data are downloaded from their separate publisher and remain subject to
+that dataset's distribution terms. The software license does not relicense
+the dataset or third-party Python dependencies.

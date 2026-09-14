@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vgae-cylinderflow-stride8"
+version = "0.1.0"
+description = "Four-GPU UV graph-autoencoder scaling with a fifteen-run campaign"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "torch>=2.4", "torchvision", "torch-geometric>=2.6",
+  "numpy>=1.26", "h5py>=3.16", "matplotlib>=3.8", "tqdm"
+]
+
+[project.scripts]
+vgae-cf = "vgae_cf.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["vgae_cf*", "dgn4cfd*"]
+
+[tool.setuptools.package-data]
+vgae_cf = ["configs/*.json"]
+
+[tool.ruff]
+extend-exclude = [".codex", "data", "runs", "artifacts"]
