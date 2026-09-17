@@ -1,4 +1,4 @@
-"""Physical UV metrics; derivatives use linear interpolation on each triangle."""
+"""Physical UV and pressure metrics on the unchanged triangular mesh."""
 
 from __future__ import annotations
 
@@ -34,25 +34,36 @@ def triangle_fields(
 def physical_metrics(
     prediction: np.ndarray, raw: np.ndarray, target: np.ndarray, geometry: dict
 ) -> dict:
-    if prediction.shape != target.shape or target.ndim != 3 or target.shape[-1] != 2:
-        raise ValueError("metrics require aligned physical UV [frames, nodes, 2]")
+    if (
+        prediction.shape != target.shape
+        or raw.shape != target.shape
+        or target.ndim != 3
+        or target.shape[-1] != 3
+    ):
+        raise ValueError("metrics require aligned physical UVP [frames, nodes, 3]")
     if not all(np.isfinite(item).all() for item in (prediction, raw, target)):
         raise ValueError("nonfinite prediction or reference; evaluation is invalid")
     prediction, raw, target = (
         np.asarray(item, dtype=np.float64) for item in (prediction, raw, target)
     )
     points, cells, labels = (geometry[key] for key in ("points", "cells", "node_type"))
-    pred_vorticity, pred_divergence, area = triangle_fields(prediction, points, cells)
-    true_vorticity, true_divergence, _ = triangle_fields(target, points, cells)
+    pred_vorticity, pred_divergence, area = triangle_fields(
+        prediction[..., :2], points, cells
+    )
+    true_vorticity, true_divergence, _ = triangle_fields(target[..., :2], points, cells)
     weights = np.zeros(len(points), dtype=np.float64)
     for vertex in range(3):
         np.add.at(weights, cells[:, vertex], area / 3)
     if np.any(weights <= 0):
         raise ValueError("every node must have positive incident triangle area")
-    error = prediction - target
+    error = prediction[..., :2] - target[..., :2]
     error_energy = float(np.sum(error**2 * weights[None, :, None]))
-    target_energy = float(np.sum(target**2 * weights[None, :, None]))
+    target_energy = float(np.sum(target[..., :2] ** 2 * weights[None, :, None]))
     triangle_denominator = area.sum() * len(target)
+    pressure_error = prediction[..., 2] - target[..., 2]
+    pressure_offset = np.sum(pressure_error * weights[None, :], axis=1) / weights.sum()
+    gauge_error = pressure_error - pressure_offset[:, None]
+    pressure_denominator = weights.sum() * len(target)
 
     def area_rms(values):
         return float(np.sqrt(np.sum(values**2 * area) / triangle_denominator))
@@ -61,6 +72,13 @@ def physical_metrics(
         "uv_mse": float(np.mean(error**2)),
         "u_mse": float(np.mean(error[..., 0] ** 2)),
         "v_mse": float(np.mean(error[..., 1] ** 2)),
+        "p_mse": float(np.mean(pressure_error**2)),
+        "pressure_raw_rmse": float(
+            np.sqrt(np.sum(pressure_error**2 * weights[None, :]) / pressure_denominator)
+        ),
+        "pressure_gauge_free_rmse": float(
+            np.sqrt(np.sum(gauge_error**2 * weights[None, :]) / pressure_denominator)
+        ),
         "area_uv_relative_rmse": math.sqrt(error_energy / target_energy)
         if target_energy > 0
         else None,
@@ -71,15 +89,15 @@ def physical_metrics(
     }
     for name, mask in {
         "inlet": labels == 4,
-        "wall": labels == 6,
+        "airfoil_surface": labels == 2,
         "outlet": labels == 5,
-        "boundary": np.isin(labels, [4, 5, 6]),
+        "boundary": np.isin(labels, [2, 4]),
     }.items():
         result[f"{name}_uv_rmse"] = (
             float(np.sqrt(np.mean(error[:, mask] ** 2))) if mask.any() else None
         )
         result[f"{name}_raw_uv_rmse"] = (
-            float(np.sqrt(np.mean((raw[:, mask] - target[:, mask]) ** 2)))
+            float(np.sqrt(np.mean((raw[:, mask, :2] - target[:, mask, :2]) ** 2)))
             if mask.any()
             else None
         )
@@ -99,6 +117,7 @@ def aggregate(rows: list[dict], expected_indices: tuple[int, ...]) -> dict:
         valid = [value for value in values if value is not None]
         result[name] = float(np.mean(valid)) if valid else None
         result[name + "_count"] = len(valid)
-    if result["uv_mse_count"] != len(expected_indices):
-        raise ValueError("selection MSE cannot exclude an invalid trajectory")
+    for metric in ("uvp_total_loss", "normalized_uvp_mse", "kl_unweighted", "uv_mse"):
+        if result[metric + "_count"] != len(expected_indices):
+            raise ValueError("selection loss cannot exclude an invalid trajectory")
     return result

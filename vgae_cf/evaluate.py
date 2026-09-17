@@ -1,4 +1,4 @@
-"""Four-GPU trajectory-sharded posterior-mean reconstruction evaluation."""
+"""Posterior-mean UVP reconstruction with equal frame and trajectory weighting."""
 
 from __future__ import annotations
 
@@ -10,14 +10,16 @@ import numpy as np
 import torch
 
 from .data import Dataset
+from .config import RECIPE
 from .distributed import Context, isolated_rng
 from .io import write_json
 from .metrics import aggregate, physical_metrics
-from .model import UVVGAE
+from .model import UVPVGAE
+from .objective import loss_components
 
 
 def evaluate(
-    model: UVVGAE,
+    model: UVPVGAE,
     data: Dataset,
     indices: tuple[int, ...],
     context: Context,
@@ -36,9 +38,10 @@ def evaluate(
         with isolated_rng(context.device), torch.inference_mode():
             for index in indices[context.rank :: context.world]:
                 geometry = data.geometry(index)
-                reference = data.read_uv(index, 1, 65)
+                reference = data.read_uvp(index, 1, 65)
                 graph_template = data.static_graph(index).to(context.device)
                 predictions, raw_predictions = [], []
+                losses = []
                 encode_seconds, decode_seconds = 0.0, 0.0
                 for field in reference:
                     graph = graph_template.clone()
@@ -55,12 +58,27 @@ def evaluate(
                     )
                     torch.cuda.synchronize(context.device)
                     decoded = time.perf_counter()
+                    values = loss_components(
+                        prediction,
+                        normalized,
+                        posterior.mean,
+                        posterior.logvar,
+                        RECIPE["kl_weight"],
+                    )
+                    losses.append([float(value) for value in values])
                     encode_seconds += encoded - started
                     decode_seconds += decoded - encoded
                     predictions.append((prediction * std + mean).cpu().numpy())
                     raw_predictions.append((raw * std + mean).cpu().numpy())
                 prediction = np.stack(predictions)
                 raw = np.stack(raw_predictions)
+                total, reconstruction, kl = np.mean(losses, axis=0)
+                metrics = physical_metrics(prediction, raw, reference, geometry)
+                metrics.update(
+                    uvp_total_loss=float(total),
+                    normalized_uvp_mse=float(reconstruction),
+                    kl_unweighted=float(kl),
+                )
                 row = {
                     "trajectory": index,
                     "frames": 64,
@@ -71,7 +89,7 @@ def evaluate(
                     * model.latent_node_features,
                     "encode_seconds": encode_seconds,
                     "decode_seconds": decode_seconds,
-                    "metrics": physical_metrics(prediction, raw, reference, geometry),
+                    "metrics": metrics,
                 }
                 write_json(directory / f"trajectory_{index:04d}.json", row)
                 if save_fields:
@@ -85,11 +103,12 @@ def evaluate(
                             points=geometry["points"],
                             cells=geometry["cells"],
                             stored_frames=np.arange(1, 65, dtype=np.int64),
+                            fields=np.asarray(["u", "v", "p"]),
                         )
                     os.replace(temporary, destination)
                 rows.append(row)
                 print(
-                    f"rank={context.rank} eval trajectory={index} UV-MSE={row['metrics']['uv_mse']:.8g}",
+                    f"rank={context.rank} eval trajectory={index} UVP-total={metrics['uvp_total_loss']:.8g} UV-MSE={metrics['uv_mse']:.8g}",
                     flush=True,
                 )
         return rows
@@ -102,7 +121,10 @@ def evaluate(
             "stored_frames": [1, 64],
             "trajectory_indices": list(indices),
             "trajectory_count": len(indices),
-            "weighting": "equal trajectories; equal time/node/UV entries within each trajectory",
+            "fields": ["u", "v", "p"],
+            "selection_metric": "uvp_total_loss",
+            "kl_weight": RECIPE["kl_weight"],
+            "weighting": "equal trajectories and frames; normalized UVP node/channel-mean MSE plus latent-element-mean KL per frame",
             "metrics": aggregate(rows, indices),
             "trajectories": rows,
             "encode_ms_per_frame": sum(row["encode_seconds"] for row in rows)
@@ -121,7 +143,7 @@ def evaluate(
 
 
 def reconstruction_figure(file_name: Path, destination: Path) -> None:
-    """Physical UV with a shared target/prediction scale over three frames."""
+    """Physical UVP with a shared target/prediction scale over three frames."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -132,8 +154,8 @@ def reconstruction_figure(file_name: Path, destination: Path) -> None:
         target, prediction = payload["target"], payload["prediction"]
         triangulation = tri.Triangulation(*payload["points"].T, payload["cells"])
     selected = [0, 31, 63]
-    figure, axes = plt.subplots(4, 3, figsize=(13, 8), layout="constrained")
-    for channel, name in enumerate(("u", "v")):
+    figure, axes = plt.subplots(6, 3, figsize=(13, 12), layout="constrained")
+    for channel, name in enumerate(("u", "v", "p")):
         low = min(
             target[selected, :, channel].min(), prediction[selected, :, channel].min()
         )
@@ -164,7 +186,9 @@ def reconstruction_figure(file_name: Path, destination: Path) -> None:
 
 
 def final_figures(summary: dict, directory: Path) -> None:
-    ordered = sorted(summary["trajectories"], key=lambda row: row["metrics"]["uv_mse"])
+    ordered = sorted(
+        summary["trajectories"], key=lambda row: row["metrics"]["uvp_total_loss"]
+    )
     for label, row in (
         ("best", ordered[0]),
         ("median", ordered[len(ordered) // 2]),

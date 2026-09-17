@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 import statistics
 
+from . import PROTOCOL
 from .campaign import completed_result
 from .io import read_json, write_json
 
@@ -50,7 +51,9 @@ def render_curves(results: list[dict], output: Path) -> None:
                     if dimension == "depths"
                     else config[dimension]
                 )
-                rows.append((x_value, result["validation24"]["metrics"]["uv_mse"]))
+                rows.append(
+                    (x_value, result["validation24"]["metrics"]["uvp_total_loss"])
+                )
         if rows:
             rows.sort()
             axis.plot(*zip(*rows), "o-")
@@ -59,7 +62,7 @@ def render_curves(results: list[dict], output: Path) -> None:
             xlabel="encoder total depth (5/10/20)"
             if dimension == "depths"
             else dimension,
-            ylabel="Validation-24 physical UV MSE",
+            ylabel="Validation-24 normalized UVP total loss",
             title=f"{dimension} / seed 0 screening",
         )
         axis.grid(alpha=0.2)
@@ -67,7 +70,7 @@ def render_curves(results: list[dict], output: Path) -> None:
     plt.close(figure)
     figure, axes = plt.subplots(1, 3, figsize=(14, 4), layout="constrained")
     for result in screen:
-        score = result["validation24"]["metrics"]["uv_mse"]
+        score = result["validation24"]["metrics"]["uvp_total_loss"]
         axes[0].scatter(result["parameter_count"] / 1e6, score)
         axes[0].annotate(
             result["spec"]["config_id"],
@@ -83,9 +86,9 @@ def render_curves(results: list[dict], output: Path) -> None:
         exposure_curve, loss_curve = [], []
         for epoch in result["history"]:
             exposure += epoch["sampled_frames"]
-            if "validation24_uv_mse" in epoch:
+            if "validation24_uvp_total_loss" in epoch:
                 exposure_curve.append(exposure)
-                loss_curve.append(epoch["validation24_uv_mse"])
+                loss_curve.append(epoch["validation24_uvp_total_loss"])
         axes[2].plot(
             exposure_curve, loss_curve, label=result["spec"]["config_id"], linewidth=1
         )
@@ -97,7 +100,7 @@ def render_curves(results: list[dict], output: Path) -> None:
             "training frame exposures",
         ),
     ):
-        axis.set(xlabel=label, ylabel="Validation-24 physical UV MSE")
+        axis.set(xlabel=label, ylabel="Validation-24 normalized UVP total loss")
         axis.grid(alpha=0.2)
     axes[2].legend(fontsize=5)
     figure.savefig(output / "capacity_and_exposure.png", dpi=170)
@@ -108,13 +111,13 @@ def render_curves(results: list[dict], output: Path) -> None:
         xs, ys = [], []
         for epoch in result["history"]:
             gpu_seconds += epoch["training_gpu_seconds"]
-            if "validation24_uv_mse" in epoch:
+            if "validation24_uvp_total_loss" in epoch:
                 xs.append(gpu_seconds / 3600)
-                ys.append(epoch["validation24_uv_mse"])
+                ys.append(epoch["validation24_uvp_total_loss"])
         axis.plot(xs, ys, label=result["spec"]["config_id"])
     axis.set(
-        xlabel="training GPU hours (4 x elapsed training)",
-        ylabel="Validation-24 physical UV MSE",
+        xlabel="training GPU hours (1 x elapsed training)",
+        ylabel="Validation-24 normalized UVP total loss",
     )
     axis.legend(fontsize=6)
     axis.grid(alpha=0.2)
@@ -133,7 +136,7 @@ def compare_fields(campaign: Path, selected: dict, output: Path) -> None:
     baseline = selected["baseline"][0]
     ordered = sorted(
         baseline["validation100"]["trajectories"],
-        key=lambda row: row["metrics"]["uv_mse"],
+        key=lambda row: row["metrics"]["uvp_total_loss"],
     )
     cases = (
         ("baseline_best", ordered[0]),
@@ -161,10 +164,10 @@ def compare_fields(campaign: Path, selected: dict, output: Path) -> None:
                     )
         arrays.insert(0, ("reference", reference))
         figure, axes = plt.subplots(
-            len(arrays), 2, figsize=(11, 2 * len(arrays)), layout="constrained"
+            len(arrays), 3, figsize=(16, 2 * len(arrays)), layout="constrained"
         )
         triangulation = tri.Triangulation(*points.T, cells)
-        for channel, field_name in enumerate(("u", "v")):
+        for channel, field_name in enumerate(("u", "v", "p")):
             low = min(values[:, channel].min() for _, values in arrays)
             high = max(values[:, channel].max() for _, values in arrays)
             for position, (label, values) in enumerate(arrays):
@@ -190,6 +193,8 @@ def compare_fields(campaign: Path, selected: dict, output: Path) -> None:
 
 def report(campaign: Path, output: Path) -> dict:
     plan = read_json(campaign / "campaign.json")
+    if plan.get("protocol") != PROTOCOL:
+        raise ValueError("report requires a current UVP campaign")
     output.mkdir(parents=True, exist_ok=True)
     results, pending = [], []
     for spec in plan["runs"]:
@@ -213,8 +218,16 @@ def report(campaign: Path, output: Path) -> dict:
                 "best_epoch": result["best_epoch"],
                 "training_epochs": result["training_epochs"],
                 "training_exposures": result["training_exposures"],
+                "validation24_uvp_total_loss": result["validation24"]["metrics"][
+                    "uvp_total_loss"
+                ],
+                "validation100_uvp_total_loss": final["metrics"]["uvp_total_loss"],
                 "validation24_uv_mse": result["validation24"]["metrics"]["uv_mse"],
                 "validation100_uv_mse": final["metrics"]["uv_mse"],
+                "pressure_raw_rmse": final["metrics"]["pressure_raw_rmse"],
+                "pressure_gauge_free_rmse": final["metrics"][
+                    "pressure_gauge_free_rmse"
+                ],
                 "area_uv_relative_rmse": final["metrics"]["area_uv_relative_rmse"],
                 "vorticity_rmse": final["metrics"]["vorticity_rmse"],
                 "divergence_rmse": final["metrics"]["divergence_rmse"],
@@ -271,7 +284,7 @@ def report(campaign: Path, output: Path) -> dict:
                     zip(seeds, selected["baseline"])
                 ):
                     score, base = (
-                        item[split]["metrics"]["uv_mse"]
+                        item[split]["metrics"]["uvp_total_loss"]
                         for item in (candidate, baseline)
                     )
                     changes.append(score - base)
@@ -280,9 +293,9 @@ def report(campaign: Path, output: Path) -> dict:
                             "config": config_id,
                             "seed": seed,
                             "split": split,
-                            "candidate_uv_mse": score,
-                            "baseline_uv_mse": base,
-                            "delta_uv_mse": score - base,
+                            "candidate_uvp_total_loss": score,
+                            "baseline_uvp_total_loss": base,
+                            "delta_uvp_total_loss": score - base,
                             "relative_change_percent": 100 * (score / base - 1)
                             if base
                             else None,
@@ -295,7 +308,7 @@ def report(campaign: Path, output: Path) -> dict:
         summary["selected_by_mean_validation24"] = min(
             selected,
             key=lambda key: (
-                summary["three_seed"][key]["validation24"]["uv_mse"]["mean"],
+                summary["three_seed"][key]["validation24"]["uvp_total_loss"]["mean"],
                 key,
             ),
         )
@@ -309,19 +322,20 @@ def report(campaign: Path, output: Path) -> dict:
         "",
         f"已完成 {len(results)}/15 次正式训练。Test 保持封存。",
         "",
-        "首轮是 seed0 筛选；最终配置按三 seed 的平均 Validation-24 物理 UV MSE 选择。",
+        "首轮是 seed0 筛选；最终配置按三 seed 的平均 Validation-24 UVP 总 loss 选择。",
         "Validation-100 是所选权重的补充评价，未参与学习率、早停或首轮晋级。",
         "",
         "三条线描述交点附近的单轴变化；未估计宽度、深度、latent 的交互作用。",
         "网络扩容收益由宽度线、深度线判断；通道容量收益由 latent 线判断。",
         "固定的是网络和数据配方；自适应收敛轮数不同，需同时查看曝光量和 GPU 时间。",
         "",
-        "|配置|Validation-24 MSE（均值 ± 样本标准差）|Validation-100 MSE（均值 ± 样本标准差）|",
+        "|配置|Validation-24 总 loss（均值 ± 样本标准差）|Validation-100 总 loss（均值 ± 样本标准差）|",
         "|---|---|---|",
     ]
     for config_id, metrics in summary["three_seed"].items():
         values = [
-            metrics[split]["uv_mse"] for split in ("validation24", "validation100")
+            metrics[split]["uvp_total_loss"]
+            for split in ("validation24", "validation100")
         ]
         lines.append(
             f"|{config_id}|{values[0]['mean']:.8g} ± {values[0]['std']:.3g}|{values[1]['mean']:.8g} ± {values[1]['std']:.3g}|"

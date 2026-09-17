@@ -9,19 +9,23 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="UV VGAE: three scaling axes, fifteen formal runs"
+        description="Airfoil four-GPU UVP VGAE: locked w512_d4-4-2_c4 seed0"
     )
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser(
-        "prepare", help="download pinned Train/Validation and freeze graph caches"
+        "prepare", help="freeze graph caches for prepared Airfoil Train/Validation"
     )
     prepare.add_argument("--data", type=Path, required=True)
     prepare.add_argument("--download-only", action="store_true")
     campaign = commands.add_parser(
-        "campaign", help="create/status/confirm the fixed campaign"
+        "campaign", help="create/status the single locked training run"
     )
-    campaign.add_argument("action", choices=("create", "status", "confirm"))
-    campaign.add_argument("--root", type=Path, default=Path("runs/campaign"))
+    campaign.add_argument("action", choices=("create", "status"))
+    campaign.add_argument("--root", type=Path, default=Path("runs/uvp_campaign"))
+    locked = commands.add_parser(
+        "retrain-slot", help="check the locked UVP retraining slot"
+    )
+    locked.add_argument("--campaign", type=Path, required=True)
     environment = commands.add_parser(
         "environment", help="record the intended formal four-GPU environment"
     )
@@ -33,7 +37,9 @@ def main() -> None:
     train.add_argument("--environment", type=Path, required=True)
     train.add_argument("--workers", type=int, default=0)
     train.add_argument("--mode", choices=("formal", "acceptance"), default="formal")
-    train.add_argument("--acceptance-root", type=Path, default=Path("runs/acceptance"))
+    train.add_argument(
+        "--acceptance-root", type=Path, default=Path("runs/uvp_acceptance")
+    )
     restart = train.add_mutually_exclusive_group()
     restart.add_argument("--resume", action="store_true")
     restart.add_argument("--retry-initial", action="store_true")
@@ -49,11 +55,6 @@ def main() -> None:
     evaluation.add_argument("--data", type=Path, required=True)
     evaluation.add_argument("--environment", type=Path, required=True)
     evaluation.add_argument("--output", type=Path, required=True)
-    report_parser = commands.add_parser(
-        "report", help="render screening and paired three-seed results"
-    )
-    report_parser.add_argument("--campaign", type=Path, required=True)
-    report_parser.add_argument("--output", type=Path, default=Path("artifacts/report"))
     args = parser.parse_args()
     if args.command == "prepare":
         from .data import prepare as prepare_data
@@ -66,6 +67,10 @@ def main() -> None:
         if args.action != "status":
             result = {key: value for key, value in result.items() if key != "source"}
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.command == "retrain-slot":
+        from .campaign import retrain_slot
+
+        print(retrain_slot(args.campaign))
     elif args.command == "train":
         if args.workers < 0 or (
             args.stop_after_epoch is not None and args.stop_after_epoch < 1
@@ -94,16 +99,11 @@ def main() -> None:
             context.close()
     elif args.command == "evaluate":
         evaluate_selected(args)
-    elif args.command == "report":
-        from .report import report
-
-        print(
-            json.dumps(report(args.campaign, args.output), ensure_ascii=False, indent=2)
-        )
 
 
 def evaluate_selected(args) -> None:
     import torch
+    from . import CHECKPOINT_FORMAT, PROTOCOL
     from .data import Dataset
     from .distributed import Context
     from .evaluate import evaluate, final_figures
@@ -117,6 +117,18 @@ def evaluate_selected(args) -> None:
         payload = torch.load(
             args.run / index["checkpoint"], map_location="cpu", weights_only=True
         )
+        if (
+            payload.get("format") != CHECKPOINT_FORMAT
+            or payload["metadata"]["spec"].get("protocol") != PROTOCOL
+        ):
+            raise ValueError("reevaluation requires a current UVP checkpoint")
+        selection = payload["state"]["selection"]
+        if (
+            index["checkpoint"] != selection["best_checkpoint"]
+            or index["epoch"] != selection["best_epoch"]
+            or index["validation24_uvp_total_loss"] != selection["best_total_loss"]
+        ):
+            raise ValueError("best index differs from checkpoint UVP selection state")
         data = Dataset(args.data)
         metadata = payload["metadata"]
         if metadata["mode"] != "formal":

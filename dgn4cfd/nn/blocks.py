@@ -1,6 +1,7 @@
 import math
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 from typing import Tuple, Callable
 from torch_geometric.utils import scatter
 
@@ -169,6 +170,7 @@ class InteractionNetwork(nn.Module):
         )
         assert aggr in ("mean", "sum"), "Aggregation must be either 'mean' or 'sum'"
         super().__init__()
+        self.activation_checkpointing = False
         # Projection of the diffusion-step embedding
         self.emb_features = emb_features
         if self.emb_features > 0:
@@ -215,7 +217,29 @@ class InteractionNetwork(nn.Module):
         edge_index: torch.Tensor,
         batch: torch.Tensor = None,
         emb: torch.Tensor = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.activation_checkpointing and self.training and torch.is_grad_enabled():
+            # This module has no BatchNorm or graph mutation. Preserve dropout RNG.
+            return checkpoint(
+                self._forward,
+                v,
+                e,
+                edge_index,
+                batch,
+                emb,
+                use_reentrant=False,
+                preserve_rng_state=True,
+            )
+        return self._forward(v, e, edge_index, batch, emb)
+
+    def _forward(
+        self,
+        v: torch.Tensor,
+        e: torch.Tensor,
+        edge_index: torch.Tensor,
+        batch: torch.Tensor = None,
+        emb: torch.Tensor = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Validate inputs
         if self.emb_features > 0:
             assert emb is not None, "An embedding must be provided"

@@ -1,4 +1,4 @@
-"""UV VGAE and the representation interface used by a subsequent DiT."""
+"""UVP VGAE and the representation interface used by a subsequent DiT."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from torch import nn
 
 from dgn4cfd.graph import Graph
+from dgn4cfd.nn.blocks import InteractionNetwork
 from dgn4cfd.nn.models import VGAE
+from . import CODEC_FORMAT, PROTOCOL
 
 
 @dataclass(frozen=True)
@@ -28,10 +29,12 @@ class Posterior:
     context: DecoderContext
 
 
-class UVVGAE(VGAE):
-    def encode_latent(self, graph: Graph, normalized_uv: torch.Tensor) -> Posterior:
+class UVPVGAE(VGAE):
+    def encode_latent(self, graph: Graph, normalized_uvp: torch.Tensor) -> Posterior:
+        if normalized_uvp.shape != (graph.pos.shape[0], 3):
+            raise ValueError("normalized_uvp must have shape [fine nodes, 3]")
         z, mean, logvar, nodes, edges, indices, batches = super().encode(
-            graph, normalized_uv
+            graph, normalized_uvp
         )
         return Posterior(
             z,
@@ -65,6 +68,14 @@ class UVVGAE(VGAE):
             raise ValueError(
                 "latent must have shape [number of level-3 nodes, latent channels]"
             )
+        if (
+            graph.dirichlet_mask.shape != (graph.pos.shape[0], 3)
+            or graph.dirichlet_mask[:, 2].any()
+            or graph.boundary_values.shape != graph.dirichlet_mask.shape
+        ):
+            raise ValueError(
+                "UVP decoding requires a three-channel mask with free pressure"
+            )
         graph.edge_index, graph.batch = context.edge_indices[-1], context.batches[-1]
         raw = super().decode(
             graph,
@@ -83,19 +94,40 @@ class UVVGAE(VGAE):
         return prediction, posterior.mean, posterior.logvar
 
 
-def build_model(architecture: dict, device: torch.device) -> UVVGAE:
-    model = UVVGAE(arch=architecture, device=device)
-    return nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
+def build_model(
+    architecture: dict,
+    device: torch.device,
+    *,
+    activation_checkpointing: bool = False,
+) -> UVPVGAE:
+    if architecture.get("in_node_features") != 3:
+        raise ValueError("the personal UVP VGAE requires three input/output fields")
+    model = UVPVGAE(arch=architecture, device=device)
+    for module in model.modules():
+        if isinstance(module, InteractionNetwork):
+            module.activation_checkpointing = activation_checkpointing
+    # Match global-batch normalization across the four shards.
+    return torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
 
 
-class UVCodec:
-    """Eval-only physical UV <-> unstandardized level-3 latent interface."""
+class UVPCodec:
+    """Eval-only physical UVP <-> unstandardized level-3 latent interface."""
 
     def __init__(self, artifact: str | Path, device: str | torch.device = "cuda"):
         payload = torch.load(artifact, map_location="cpu", weights_only=True)
-        if payload.get("format") != "vgae_cf.codec.v1":
-            raise ValueError("expected an exported UV codec")
+        if payload.get("format") != CODEC_FORMAT:
+            raise ValueError(
+                "expected an exported UVP codec; old UV codecs are incompatible"
+            )
         self.metadata = payload["metadata"]
+        if self.metadata.get("protocol") != PROTOCOL or self.metadata.get("fields") != [
+            "u",
+            "v",
+            "p",
+        ]:
+            raise ValueError(
+                "codec metadata does not describe the current UVP protocol"
+            )
         self.device = torch.device(device)
         self.model = build_model(self.metadata["architecture"], self.device)
         self.model.load_state_dict(payload["model"], strict=True)
@@ -110,14 +142,24 @@ class UVCodec:
             device=self.device,
             dtype=torch.float32,
         )
+        if (
+            self.mean.shape != (3,)
+            or self.std.shape != (3,)
+            or not torch.isfinite(self.mean).all()
+            or not torch.isfinite(self.std).all()
+            or (self.std <= 0).any()
+        ):
+            raise ValueError(
+                "codec requires finite Train UVP normalization and positive std"
+            )
 
     @torch.inference_mode()
-    def encode(self, graph: Graph, physical_uv: torch.Tensor) -> Posterior:
+    def encode(self, graph: Graph, physical_uvp: torch.Tensor) -> Posterior:
         """Return posterior mean/logvar/sample and reusable static decoder context."""
         graph = graph.clone().to(self.device)
-        values = physical_uv.to(device=self.device, dtype=torch.float32)
-        if values.shape != (graph.pos.shape[0], 2):
-            raise ValueError("physical_uv must have shape [fine nodes, 2]")
+        values = physical_uvp.to(device=self.device, dtype=torch.float32)
+        if values.shape != (graph.pos.shape[0], 3):
+            raise ValueError("physical_uvp must have shape [fine nodes, 3]")
         return self.model.encode_latent(graph, (values - self.mean) / self.std)
 
     @torch.inference_mode()
@@ -127,7 +169,7 @@ class UVCodec:
         latent: torch.Tensor,
         context: DecoderContext | None = None,
     ) -> torch.Tensor:
-        """Decode predicted or posterior-mean latents to physical UV."""
+        """Decode predicted or posterior-mean latents to physical UVP."""
         graph = graph.clone().to(self.device)
         if context is None:
             context = self.model.conditions(graph)

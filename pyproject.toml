@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vgae-cylinderflow-stride8"
-version = "0.1.0"
-description = "Four-GPU UV graph-autoencoder scaling with a fifteen-run campaign"
+version = "0.2.0"
+description = "Locked four-GPU Airfoil UVP graph-autoencoder training and export"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 vgae-cf = "vgae_cf.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["vgae_cf*", "dgn4cfd*"]
+include = ["vgae_cf*", "dgn4cfd*", "airfoil_data*"]
 
 [tool.setuptools.package-data]
 vgae_cf = ["configs/*.json"]

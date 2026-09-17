@@ -1,12 +1,10 @@
-"""Pinned Train/Validation data, UV-only fields and unchanged mesh coarsening."""
+"""Pinned Train/Validation UVP fields and unchanged mesh coarsening."""
 
 from __future__ import annotations
 
 import copy
 import os
 from pathlib import Path
-import shutil
-import urllib.request
 
 import h5py
 import numpy as np
@@ -18,12 +16,12 @@ from dgn4cfd.transforms import AddDirichletMask, MeshCoarsening, ScaleEdgeAttr
 from .io import read_json, write_json
 
 
-DATA_REPOSITORY = "DingDong1921/mgn-cylinderflow-stride8-75frames"
-DATA_REVISION = "8eae2c7a697e7d01f3b98f4d642ea476784df84a"
-DATA_FILE = "cylinderflow_stride8_75frames.h5"
-MANIFEST_FILE = "cylinderflow_stride8_75frames_manifest.json"
-FORMAT = "dgn4cfd.mgn_cylinderflow_temporal_stride.v1"
-GRAPH_FORMAT = "cylinderflow.uv_graph_hierarchy.v1"
+DATA_REPOSITORY = "dm-meshgraphnets/airfoil"
+DATA_REVISION = "airfoil.uvp.stride8.first75.v1"
+DATA_FILE = "airfoil_stride8_75frames.h5"
+MANIFEST_FILE = "airfoil_stride8_75frames_manifest.json"
+FORMAT = "dgn4cfd.mgn_airfoil_uvp_temporal_stride.v1"
+GRAPH_FORMAT = "airfoil.uvp_graph_hierarchy.v1"
 
 
 def monitor_indices(indices: tuple[int, ...], count: int = 24) -> tuple[int, ...]:
@@ -48,8 +46,10 @@ class Dataset:
         m = self.manifest
         if m.get("format") != FORMAT or m.get("frames") != 75:
             raise ValueError("expected the released 75-frame stride-8 manifest")
-        if m.get("temporal_stride") != 8 or not np.isclose(m.get("frame_dt", 0), 0.08):
-            raise ValueError("expected stride=8 and dt=0.08")
+        if m.get("temporal_stride") != 8 or not np.isclose(
+            m.get("frame_dt", 0), 0.0016
+        ):
+            raise ValueError("expected stride=8 and dt=0.0016")
         if m.get("phase_offset", 0) != 0 or m.get("phase_augmentation", False):
             raise ValueError("only phase-zero data are supported")
         if m.get("source_frame_indices") != list(range(0, 600, 8)):
@@ -65,23 +65,19 @@ class Dataset:
                 "only the official Train 0..999 / Validation 1000..1099 split is supported"
             )
         self.normalization = copy.deepcopy(m["train_only_normalization"])
-        self.mean = torch.tensor(
-            self.normalization["field_mean"][:2], dtype=torch.float32
-        )
-        self.std = torch.tensor(
-            self.normalization["field_std"][:2], dtype=torch.float32
-        )
+        self.mean = torch.tensor(self.normalization["field_mean"], dtype=torch.float32)
+        self.std = torch.tensor(self.normalization["field_std"], dtype=torch.float32)
         if (
-            self.mean.shape != (2,)
-            or self.std.shape != (2,)
+            self.mean.shape != (3,)
+            or self.std.shape != (3,)
             or not torch.isfinite(self.mean).all()
         ):
-            raise ValueError("invalid Train UV normalization")
+            raise ValueError("invalid Train UVP normalization")
         if not torch.isfinite(self.std).all() or (self.std <= 0).any():
-            raise ValueError("invalid Train UV standard deviation")
+            raise ValueError("invalid Train UVP standard deviation")
         if float(self.normalization["inlet_std"]) <= 0:
             raise ValueError("invalid inlet normalization")
-        self.graph_directory = self.directory / "uv_graphs"
+        self.graph_directory = self.directory / "uvp_graphs"
         self._graphs: dict[int, Graph] = {}
         with h5py.File(self.dataset_file, "r") as handle:
             required = {
@@ -93,7 +89,7 @@ class Dataset:
                 "test_accessed": False,
                 "train_count": 1000,
                 "validation_count": 100,
-                "frame_dt": 0.08,
+                "frame_dt": 0.0016,
             }
             if any(handle.attrs.get(key) != value for key, value in required.items()):
                 raise ValueError(
@@ -116,7 +112,7 @@ class Dataset:
             "dataset_revision": DATA_REVISION,
             "dataset_bytes": self.dataset_file.stat().st_size,
             "manifest": self.manifest,
-            "model_fields": ["u", "v"],
+            "model_fields": ["u", "v", "p"],
             "coarse_level": 3,
             "graph_format": GRAPH_FORMAT,
             "test_accessed": False,
@@ -134,17 +130,17 @@ class Dataset:
             "format": GRAPH_FORMAT,
         }
 
-    def read_uv(self, index: int, start: int = 0, stop: int = 65) -> np.ndarray:
+    def read_uvp(self, index: int, start: int = 0, stop: int = 65) -> np.ndarray:
         self._check_index(index)
         if not 0 <= start < stop <= 75:
             raise ValueError("field access must remain within stored frames 0..74")
         with h5py.File(self.dataset_file, "r") as handle:
             values = np.asarray(
-                handle[f"trajectory_{index:04d}/uvp"][start:stop, :, :2],
+                handle[f"trajectory_{index:04d}/uvp"][start:stop, :, :],
                 dtype=np.float32,
             )
         if not np.isfinite(values).all():
-            raise ValueError(f"nonfinite UV reference: trajectory {index}")
+            raise ValueError(f"nonfinite UVP reference: trajectory {index}")
         return values
 
     def geometry(self, index: int) -> dict:
@@ -187,8 +183,8 @@ class Dataset:
                     raise ValueError("invalid triangular geometry")
                 if cells.min() < 0 or cells.max() >= len(points):
                     raise ValueError("cell index is outside the mesh")
-                if not set(np.unique(labels)).issubset({0, 4, 5, 6}):
-                    raise ValueError("unknown CylinderFlow node type")
+                if not set(np.unique(labels)).issubset({0, 2, 4}):
+                    raise ValueError("unknown Airfoil node type")
                 graph = Graph()
                 graph.pos = torch.from_numpy(points)
                 cells_tensor = torch.from_numpy(cells)
@@ -206,11 +202,11 @@ class Dataset:
                 graph.bound = torch.zeros(len(points), dtype=torch.uint8)
                 graph.bound[graph.node_type == 4] = 2
                 graph.bound[graph.node_type == 5] = 3
-                graph.bound[graph.node_type == 6] = 4
+                graph.bound[graph.node_type == 2] = 4
                 graph.omega = torch.zeros(len(points), 3, dtype=torch.float32)
                 graph.omega[(graph.node_type == 0) | (graph.node_type == 5), 0] = 1
                 graph.omega[graph.node_type == 4, 1] = 1
-                graph.omega[graph.node_type == 6, 2] = 1
+                graph.omega[graph.node_type == 2, 2] = 1
                 inlet = (
                     sample["inlet_velocity"] - self.normalization["inlet_mean"]
                 ) / self.normalization["inlet_std"]
@@ -218,13 +214,13 @@ class Dataset:
                     (len(points), 1), float(inlet), dtype=torch.float32
                 )
                 graph = ScaleEdgeAttr(0.15)(graph)
-                graph = AddDirichletMask(2, [0, 1], [2, 4])(graph)
+                graph = AddDirichletMask(3, [0, 1], [])(graph)
                 graph = MeshCoarsening(
                     num_scales=5,
                     rel_pos_scaling=[0.15, 0.3, 0.6, 1.2, 2.4],
                     scalar_rel_pos=True,
                 )(graph)
-                initial = torch.from_numpy(self.read_uv(index, 0, 1)[0])
+                initial = torch.from_numpy(self.read_uvp(index, 0, 1)[0])
                 graph.boundary_values = torch.where(
                     graph.dirichlet_mask,
                     (initial - self.mean) / self.std,
@@ -238,7 +234,7 @@ class Dataset:
 
     def frame(self, index: int, frame: int) -> Graph:
         graph = self.static_graph(index)
-        field = torch.from_numpy(self.read_uv(index, frame, frame + 1)[0])
+        field = torch.from_numpy(self.read_uvp(index, frame, frame + 1)[0])
         graph.target = (field - self.mean) / self.std
         graph.field = graph.target.clone()
         graph.trajectory_id = torch.tensor([index], dtype=torch.long)
@@ -261,18 +257,9 @@ class EpochFrames(torch.utils.data.Dataset):
 
 def prepare(directory: Path, *, download_only: bool = False) -> None:
     directory.mkdir(parents=True, exist_ok=True)
-    for name, folder in ((DATA_FILE, "data"), (MANIFEST_FILE, "metadata")):
-        destination = directory / name
-        if not destination.exists():
-            temporary = destination.with_name(name + ".partial")
-            url = f"https://huggingface.co/datasets/{DATA_REPOSITORY}/resolve/{DATA_REVISION}/{folder}/{name}"
-            print(f"Downloading {name}", flush=True)
-            with (
-                urllib.request.urlopen(url, timeout=120) as response,
-                temporary.open("wb") as stream,
-            ):
-                shutil.copyfileobj(response, stream, 1024 * 1024)
-            os.replace(temporary, destination)
+    for name in (DATA_FILE, MANIFEST_FILE):
+        if not (directory / name).is_file():
+            raise FileNotFoundError("run python -m airfoil_data.prepare first: " + name)
     data = Dataset(directory)
     write_json(directory / "data_identity.json", data.identity())
     if download_only:
