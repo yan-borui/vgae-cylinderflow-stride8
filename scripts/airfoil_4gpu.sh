@@ -31,12 +31,8 @@ manifest="$DATA_DIR/airfoil_stride8_75frames_manifest.json"
 extra=()
 if [[ "$action" == resume ]]; then extra=(--resume); fi
 
-(
-    flock 9
-    if [[ ! -f "$DATA_DIR/graph_inventory.json" ]]; then
-        "$python_bin" -m vgae_cf prepare --data "$DATA_DIR" 2>&1 | tee -a "$DATA_DIR/vgae_graph_preparation.log"
-    fi
-) 9>"$DATA_DIR/.vgae-graphs.lock"
+"$python_bin" "$code_root/airfoil_data/portable_lock.py" --wait --lock "$DATA_DIR/.vgae-graphs.lock" -- \
+    bash "$code_root/scripts/prepare_airfoil_cache.sh"
 if [[ "$action" == prepare ]]; then exit 0; fi
 mkdir -p "$RESULT_ROOT"
 export CAMPAIGN_DIR="$RESULT_ROOT/campaign"
