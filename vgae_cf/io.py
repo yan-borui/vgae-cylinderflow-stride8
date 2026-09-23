@@ -32,25 +32,12 @@ def append_json(file_name: str | Path, value: object) -> None:
 
 @contextmanager
 def file_lock(directory: Path):
-    """Use a process-scoped lock; stale files never prevent recovery."""
+    """Serialize shared-directory writers with atomic mkdir."""
+    from .portable_lock import DirectoryLock
+
     directory.mkdir(parents=True, exist_ok=True)
-    stream = (directory / ".lock").open("a+b")
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            stream.seek(0)
-            stream.write(b"0")
-            stream.flush()
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with DirectoryLock(directory / ".lock"):
         yield
-    finally:
-        stream.close()
 
 
 def source_identity() -> dict:

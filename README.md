@@ -1,5 +1,7 @@
 # VGAE · CylinderFlow stride-8 · 四卡扩容
 
+**NAS 运行：**[启动入口与共享目录设置](NAS.md)。
+
 用 **15 次正式训练**检验 UV VGAE 能否通过扩大网络和 latent 通道降低重建误差。首轮 9 个配置共享训练配方；三条扩容线交于 **width512 / encoder [4,4,2] / latent4**。交点是先验候选，胜出配置由 Validation 决定。
 
 **交付状态：源码、启动器和两阶段管理已实现；目标四卡运行验收待完成。当前没有训练结果或已验证的显存上限。** 开始训练请读 [FOUR_GPU.md](FOUR_GPU.md)，验收范围见 [VALIDATION.md](VALIDATION.md)。
