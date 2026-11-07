@@ -1,3 +1,5 @@
+**Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
+
 # VGAE · CylinderFlow stride-8 · 四卡扩容
 
 **NAS 运行：**[启动入口与共享目录设置](NAS.md)。
@@ -45,7 +47,7 @@ bash scripts/run_4gpu.sh 2            # 优先候选，正式 seed0
 
 ## 数据、结果与表示接口
 
-数据来自 [固定 revision 的 Train/Validation 发布](https://huggingface.co/datasets/DingDong1921/mgn-cylinderflow-stride8-75frames/tree/8eae2c7a697e7d01f3b98f4d642ea476784df84a)。准备工具下载 HDF5 和 manifest，读取 UV 两个通道，沿用 Train 归一化并缓存图层级；Test 保持封存。
+数据来自 [固定 revision 的 Train/Validation 发布](https://huggingface.co/datasets/DingDong1921/mgn-cylinderflow-stride8-75frames/tree/8eae2c7a697e7d01f3b98f4d642ea476784df84a)。准备工具下载 HDF5 和 manifest，读取 UV 两个通道，沿用 Train 归一化并缓存图层级；Test 入口见 [TEST.md](TEST.md)。
 
 训练结果保留滚动恢复点、每次选模评价的完整 checkpoint、最佳索引、逐轨迹指标、Validation-100 重建场、共同色标图及 `codec.pt`。后续 DiT 使用 `UVCodec.encode/decode`，接口和张量含义见 [REPRESENTATION.md](REPRESENTATION.md)。
 
