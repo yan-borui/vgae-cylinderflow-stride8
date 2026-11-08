@@ -33,9 +33,9 @@ RECIPE = {
     "minimum_lr": 0.0,
     "stopping_learning_rate": 1e-8,
     "reconstruction": "normalized_uvp_global_node_channel_mse",
-    "selection": "validation24_uvp_total_loss",
+    "selection": "selection_validation100_uvp_total_loss",
     "coarse_level": 3,
-    "train_frames": [0, 74],
+    "train_frames": [0, 64],
     "evaluation_frames": [1, 64],
     "test_accessed": False,
 }

@@ -44,7 +44,7 @@ def source_identity() -> dict:
     """Snapshot executable source text; Git identity is supplementary."""
     root = Path(__file__).resolve().parent.parent
     sources = {}
-    for package in ("vgae_cf", "dgn4cfd"):
+    for package in ("vgae_cf", "dgn4cfd", "megaflow_data"):
         for item in sorted((root / package).rglob("*")):
             if item.is_file() and item.suffix in (".py", ".json"):
                 sources[item.relative_to(root).as_posix()] = item.read_text(

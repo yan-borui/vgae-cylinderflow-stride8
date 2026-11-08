@@ -98,11 +98,18 @@ def evaluate(
                     with temporary.open("wb") as stream:
                         np.savez_compressed(
                             stream,
-                            prediction=prediction,
-                            target=reference,
+                            prediction=np.concatenate(
+                                (data.read_uvp(index, 0, 1), prediction)
+                            ),
+                            target=np.concatenate(
+                                (data.read_uvp(index, 0, 1), reference)
+                            ),
                             points=geometry["points"],
                             cells=geometry["cells"],
-                            stored_frames=np.arange(1, 65, dtype=np.int64),
+                            stored_frames=np.arange(65, dtype=np.int64),
+                            source_frame_indices=np.arange(1, 962, 15, dtype=np.int64),
+                            time=np.arange(65) * 0.15,
+                            task=np.asarray("posterior_mean_reconstruction_future64"),
                             fields=np.asarray(["u", "v", "p"]),
                         )
                     os.replace(temporary, destination)
@@ -153,7 +160,7 @@ def reconstruction_figure(file_name: Path, destination: Path) -> None:
     with np.load(file_name) as payload:
         target, prediction = payload["target"], payload["prediction"]
         triangulation = tri.Triangulation(*payload["points"].T, payload["cells"])
-    selected = [0, 31, 63]
+    selected = [1, 32, 64]
     figure, axes = plt.subplots(6, 3, figsize=(13, 12), layout="constrained")
     for channel, name in enumerate(("u", "v", "p")):
         low = min(
@@ -174,7 +181,7 @@ def reconstruction_figure(file_name: Path, destination: Path) -> None:
                     vmin=low,
                     vmax=high,
                 )
-                axis.set(title=f"{name} {label} / stored {frame + 1}", aspect="equal")
+                axis.set(title=f"{name} {label} / stored {frame}", aspect="equal")
         figure.colorbar(
             artist,
             ax=axes[2 * channel : 2 * channel + 2].ravel().tolist(),

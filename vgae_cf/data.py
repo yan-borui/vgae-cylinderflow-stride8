@@ -14,17 +14,18 @@ from torch_geometric.utils import coalesce
 from dgn4cfd.graph import Graph
 from dgn4cfd.transforms import AddDirichletMask, MeshCoarsening, ScaleEdgeAttr
 from .io import read_json, write_json
+from megaflow_data.dataset import Dataset as PhysicalDataset
 
 
-DATA_REPOSITORY = "dm-meshgraphnets/airfoil"
-DATA_REVISION = "airfoil.uvp.stride8.first75.v1"
-DATA_FILE = "airfoil_stride8_75frames.h5"
-MANIFEST_FILE = "airfoil_stride8_75frames_manifest.json"
-FORMAT = "dgn4cfd.mgn_airfoil_uvp_temporal_stride.v1"
-GRAPH_FORMAT = "airfoil.uvp_graph_hierarchy.v1"
+DATA_REPOSITORY = "cmudrc/MegaFlow2D"
+DATA_REVISION = "megaflow2d.ellipse.high_uvp.stride15.first65.seed42.v1"
+DATA_FILE = "ellipse_stride15_65frames.h5"
+MANIFEST_FILE = "ellipse_stride15_65frames_manifest.json"
+FORMAT = "dgn4cfd.megaflow2d_ellipse_uvp.v1"
+GRAPH_FORMAT = "megaflow2d.ellipse.uvp_graph_hierarchy.v1"
 
 
-def monitor_indices(indices: tuple[int, ...], count: int = 24) -> tuple[int, ...]:
+def monitor_indices(indices: tuple[int, ...], count: int = 100) -> tuple[int, ...]:
     positions = np.rint(
         np.linspace(0, len(indices) - 1, min(count, len(indices)))
     ).astype(int)
@@ -33,37 +34,19 @@ def monitor_indices(indices: tuple[int, ...], count: int = 24) -> tuple[int, ...
 
 def sampled_frame(seed: int, epoch: int, trajectory: int) -> int:
     generator = np.random.default_rng(np.random.SeedSequence([seed, epoch, trajectory]))
-    return int(generator.integers(0, 75))
+    return int(generator.integers(0, 65))
 
 
 class Dataset:
-    """Only the released Train/Validation trajectories can be read."""
+    """Read published Ellipse IDs; each stage explicitly selects its split."""
 
     def __init__(self, directory: str | Path):
         self.directory = Path(directory).expanduser().resolve(strict=True)
         self.dataset_file = self.directory / DATA_FILE
         self.manifest = read_json(self.directory / MANIFEST_FILE)
         m = self.manifest
-        if m.get("format") != FORMAT or m.get("frames") != 75:
-            raise ValueError("expected the released 75-frame stride-8 manifest")
-        if m.get("temporal_stride") != 8 or not np.isclose(
-            m.get("frame_dt", 0), 0.0016
-        ):
-            raise ValueError("expected stride=8 and dt=0.0016")
-        if m.get("phase_offset", 0) != 0 or m.get("phase_augmentation", False):
-            raise ValueError("only phase-zero data are supported")
-        if m.get("source_frame_indices") != list(range(0, 600, 8)):
-            raise ValueError("stored frames must correspond to raw 0,8,...,592")
-        if m.get("test_accessed") not in (False, None):
-            raise ValueError("the dataset must keep Test sealed")
-        self.splits = {key: tuple(value) for key, value in m["splits"].items()}
-        if self.splits != {
-            "train": tuple(range(1000)),
-            "validation": tuple(range(1000, 1100)),
-        }:
-            raise ValueError(
-                "only the official Train 0..999 / Validation 1000..1099 split is supported"
-            )
+        physical = PhysicalDataset(self.dataset_file, self.directory / MANIFEST_FILE)
+        self.splits = physical.splits
         self.normalization = copy.deepcopy(m["train_only_normalization"])
         self.mean = torch.tensor(self.normalization["field_mean"], dtype=torch.float32)
         self.std = torch.tensor(self.normalization["field_std"], dtype=torch.float32)
@@ -79,32 +62,6 @@ class Dataset:
             raise ValueError("invalid inlet normalization")
         self.graph_directory = self.directory / "uvp_graphs"
         self._graphs: dict[int, Graph] = {}
-        with h5py.File(self.dataset_file, "r") as handle:
-            required = {
-                "format": FORMAT,
-                "frames": 75,
-                "temporal_stride": 8,
-                "phase_offset": 0,
-                "phase_augmentation": False,
-                "test_accessed": False,
-                "train_count": 1000,
-                "validation_count": 100,
-                "frame_dt": 0.0016,
-            }
-            if any(handle.attrs.get(key) != value for key, value in required.items()):
-                raise ValueError(
-                    "HDF5 metadata disagrees with the released data contract"
-                )
-            for index in self.splits["train"] + self.splits["validation"]:
-                group = handle[f"trajectory_{index:04d}"]
-                if group["uvp"].shape[0] != 75 or group["uvp"].shape[-1] != 3:
-                    raise ValueError("stored fields must have shape [75,N,3]")
-                if group["mesh_pos"].shape != (group["uvp"].shape[1], 2):
-                    raise ValueError("mesh and field node counts disagree")
-                if group.attrs.get("source_split") != (
-                    "train" if index < 1000 else "validation"
-                ):
-                    raise ValueError("source split differs from the official manifest")
 
     def identity(self) -> dict:
         return {
@@ -119,8 +76,8 @@ class Dataset:
         }
 
     def _check_index(self, index: int) -> None:
-        if index not in self.splits["train"] and index not in self.splits["validation"]:
-            raise ValueError("trajectory is outside Train/Validation")
+        if not any(index in members for members in self.splits.values()):
+            raise ValueError("trajectory is outside the published Ellipse split lists")
 
     def graph_identity(self) -> dict:
         return {
@@ -132,8 +89,8 @@ class Dataset:
 
     def read_uvp(self, index: int, start: int = 0, stop: int = 65) -> np.ndarray:
         self._check_index(index)
-        if not 0 <= start < stop <= 75:
-            raise ValueError("field access must remain within stored frames 0..74")
+        if not 0 <= start < stop <= 65:
+            raise ValueError("field access must remain within stored frames 0..64")
         with h5py.File(self.dataset_file, "r") as handle:
             values = np.asarray(
                 handle[f"trajectory_{index:04d}/uvp"][start:stop, :, :],
@@ -183,8 +140,8 @@ class Dataset:
                     raise ValueError("invalid triangular geometry")
                 if cells.min() < 0 or cells.max() >= len(points):
                     raise ValueError("cell index is outside the mesh")
-                if not set(np.unique(labels)).issubset({0, 2, 4}):
-                    raise ValueError("unknown Airfoil node type")
+                if not set(np.unique(labels)).issubset({0, 2, 4, 5, 6}):
+                    raise ValueError("unknown Ellipse node type")
                 graph = Graph()
                 graph.pos = torch.from_numpy(points)
                 cells_tensor = torch.from_numpy(cells)
@@ -202,11 +159,11 @@ class Dataset:
                 graph.bound = torch.zeros(len(points), dtype=torch.uint8)
                 graph.bound[graph.node_type == 4] = 2
                 graph.bound[graph.node_type == 5] = 3
-                graph.bound[graph.node_type == 2] = 4
+                graph.bound[(graph.node_type == 2) | (graph.node_type == 6)] = 4
                 graph.omega = torch.zeros(len(points), 3, dtype=torch.float32)
                 graph.omega[(graph.node_type == 0) | (graph.node_type == 5), 0] = 1
                 graph.omega[graph.node_type == 4, 1] = 1
-                graph.omega[graph.node_type == 2, 2] = 1
+                graph.omega[(graph.node_type == 2) | (graph.node_type == 6), 2] = 1
                 inlet = (
                     sample["inlet_velocity"] - self.normalization["inlet_mean"]
                 ) / self.normalization["inlet_std"]
@@ -259,14 +216,14 @@ def prepare(directory: Path, *, download_only: bool = False) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for name in (DATA_FILE, MANIFEST_FILE):
         if not (directory / name).is_file():
-            raise FileNotFoundError("run python -m airfoil_data.prepare first: " + name)
+            raise FileNotFoundError("run python -m megaflow_data.ensure first: " + name)
     data = Dataset(directory)
     write_json(directory / "data_identity.json", data.identity())
     if download_only:
         return
     data.graph_directory.mkdir(parents=True, exist_ok=True)
     inventory = []
-    for index in data.splits["train"] + data.splits["validation"]:
+    for index in tuple(case for ids in data.splits.values() for case in ids):
         graph = data.static_graph(index)
         destination = data.graph_directory / f"{index:04d}.pt"
         if not destination.exists():
@@ -289,5 +246,5 @@ def prepare(directory: Path, *, download_only: bool = False) -> None:
         )
         data._graphs.pop(index, None)
         if len(inventory) % 50 == 0:
-            print(f"Prepared {len(inventory)}/1100 static graphs", flush=True)
+            print(f"Prepared {len(inventory)}/982 static graphs", flush=True)
     write_json(directory / "graph_inventory.json", inventory)

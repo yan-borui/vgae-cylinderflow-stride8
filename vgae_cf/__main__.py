@@ -9,11 +9,11 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Airfoil four-GPU UVP VGAE: locked w512_d4-4-2_c4 seed0"
+        description="Ellipse four-GPU UVP VGAE: locked w512_d4-4-2_c4 seed0"
     )
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser(
-        "prepare", help="freeze graph caches for prepared Airfoil Train/Validation"
+        "prepare", help="freeze graph caches for prepared Ellipse Train/Validation"
     )
     prepare.add_argument("--data", type=Path, required=True)
     prepare.add_argument("--download-only", action="store_true")
@@ -126,7 +126,8 @@ def evaluate_selected(args) -> None:
         if (
             index["checkpoint"] != selection["best_checkpoint"]
             or index["epoch"] != selection["best_epoch"]
-            or index["validation24_uvp_total_loss"] != selection["best_total_loss"]
+            or index["selection_validation100_uvp_total_loss"]
+            != selection["best_total_loss"]
         ):
             raise ValueError("best index differs from checkpoint UVP selection state")
         data = Dataset(args.data)

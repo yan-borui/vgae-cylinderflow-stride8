@@ -89,7 +89,7 @@ def physical_metrics(
     }
     for name, mask in {
         "inlet": labels == 4,
-        "airfoil_surface": labels == 2,
+        "ellipse_surface": labels == 2,
         "outlet": labels == 5,
         "boundary": np.isin(labels, [2, 4]),
     }.items():

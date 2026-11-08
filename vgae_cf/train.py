@@ -1,4 +1,4 @@
-"""Four-GPU Airfoil training with the locked 5090 UVP objective."""
+"""Four-GPU Ellipse training with the locked 5090 UVP objective."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
 from dgn4cfd.loader import Collater
+from megaflow_data.contract import splits
 from . import CHECKPOINT_FORMAT, CODEC_FORMAT, DIT_AUTOENCODER_FORMAT, PROTOCOL
 from .campaign import slot
 from .config import RECIPE
@@ -51,8 +52,9 @@ def next_attempt(directory: Path, prefix: str) -> Path:
 def epoch_batches(
     seed: int, epoch: int, rank: int, *, acceptance: bool
 ) -> list[list[int]]:
-    generator = np.random.default_rng(np.random.SeedSequence([seed, epoch, 1100]))
-    order = generator.permutation(1000).tolist()
+    generator = np.random.default_rng(np.random.SeedSequence([seed, epoch, 982]))
+    # DataLoader keys are ordinals; EpochFrames resolves the original case ID.
+    order = generator.permutation(len(splits()["train"])).tolist()
     if acceptance:
         order = order[:24]
     world = RECIPE["world_size"]
@@ -156,7 +158,7 @@ def train_epoch(
     maximum_grad_norm = max(context.gather(maximum_grad_norm))
     sampled_frames = sum(context.gather(sampled_frames))
     epoch_loss_sum = sum(context.gather(epoch_loss_sum)) / context.world
-    expected = 24 if acceptance else 1000
+    expected = 24 if acceptance else len(data.splits["train"])
     if sampled_frames != expected:
         raise ValueError(
             "epoch must consume every selected trajectory once, without padding/dropping"
@@ -217,7 +219,7 @@ def save_state(
                 {
                     "checkpoint": state["selection"]["best_checkpoint"],
                     "epoch": state["selection"]["best_epoch"],
-                    "validation24_uvp_total_loss": state["selection"][
+                    "selection_validation100_uvp_total_loss": state["selection"][
                         "best_total_loss"
                     ],
                     "evaluation_directory": state["selection"]["best_evaluation"],
@@ -261,9 +263,9 @@ def export_codec(root: Path, model, metadata: dict, selection: dict) -> None:
         },
         "conditions": [
             "normalized initial inflow speed magnitude",
-            "interior one-hot",
+            "interior/outlet one-hot",
             "inlet one-hot",
-            "Airfoil surface one-hot",
+            "ellipse/top/bottom solid one-hot",
         ],
         "edge_conditions": "2D relative edge position, scaled as upstream",
         "condition_encoder_depths": [1, 1, 1],
@@ -472,8 +474,8 @@ def run(args) -> None:
         )
         wall_before = state["committed_wall_seconds"]
         torch.cuda.reset_peak_memory_stats(context.device)
-        count = 4 if acceptance else 24
-        train_indices = monitor_indices(data.splits["train"], count)
+        count = 4 if acceptance else 100
+        train_indices = monitor_indices(data.splits["train"], 4 if acceptance else 24)
         validation_indices = monitor_indices(data.splits["validation"], count)
         maximum_epochs = 2 if acceptance else spec["recipe"]["maximum_epochs"]
         for epoch in range(state["epoch"] + 1, maximum_epochs + 1):
@@ -518,7 +520,7 @@ def run(args) -> None:
                     data,
                     validation_indices,
                     context,
-                    evaluation_root / "validation24",
+                    evaluation_root / "selection_validation100",
                 )
                 state["selection"], improved = update_selection(
                     state["selection"],
@@ -534,9 +536,11 @@ def run(args) -> None:
                     ).as_posix()
                 row.update(
                     train24_uvp_total_loss=train_result["metrics"]["uvp_total_loss"],
-                    validation24_uvp_total_loss=validation["metrics"]["uvp_total_loss"],
+                    selection_validation100_uvp_total_loss=validation["metrics"][
+                        "uvp_total_loss"
+                    ],
                     train24_uv_mse=train_result["metrics"]["uv_mse"],
-                    validation24_uv_mse=validation["metrics"]["uv_mse"],
+                    selection_validation100_uv_mse=validation["metrics"]["uv_mse"],
                     evaluation=evaluation_root.relative_to(root).as_posix(),
                     improved=improved,
                     next_learning_rate=state["selection"]["learning_rate"],
@@ -568,9 +572,9 @@ def run(args) -> None:
                         "status": state["phase"],
                         "epoch": epoch,
                         "updated": utc_now(),
-                        "best_validation24_uvp_total_loss": state["selection"][
-                            "best_total_loss"
-                        ],
+                        "best_selection_validation100_uvp_total_loss": state[
+                            "selection"
+                        ]["best_total_loss"],
                         "exposures": state["exposures"],
                     },
                 )
@@ -629,15 +633,15 @@ def run(args) -> None:
             "spec": spec,
             "best_epoch": selection["best_epoch"],
             "best_checkpoint": selection["best_checkpoint"],
-            "validation24_uvp_total_loss": selection["best_total_loss"],
+            "selection_validation100_uvp_total_loss": selection["best_total_loss"],
             "training_epochs": state["epoch"],
             "stop_reason": state["stop_reason"],
             "parameter_count": sum(
                 parameter.numel() for parameter in model.parameters()
             ),
             "train24": read_json(best_evaluation / "train24" / "summary.json"),
-            "validation24": read_json(
-                best_evaluation / "validation24" / "summary.json"
+            "selection_validation100": read_json(
+                best_evaluation / "selection_validation100" / "summary.json"
             ),
             "validation100"
             if not acceptance

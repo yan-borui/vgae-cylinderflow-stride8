@@ -39,7 +39,7 @@ def slot(directory: Path, number: int) -> tuple[dict, dict]:
         or plan.get("maximum_formal_runs") != 1
         or plan.get("runs") != [expected]
     ):
-        raise ValueError("Airfoil locks one w512_d4-4-2_c4 seed0 run in slot0")
+        raise ValueError("Ellipse locks one w512_d4-4-2_c4 seed0 run in slot0")
     return expected, plan
 
 
@@ -59,23 +59,23 @@ def completed_result(directory: Path, spec: dict) -> dict:
     ):
         raise ValueError(f"{spec['id']} has no completed matching formal result")
     if (
-        result["validation24"]["trajectory_count"] != 24
+        result["selection_validation100"]["trajectory_count"] != 100
         or result["validation100"]["trajectory_count"] != 100
     ):
         raise ValueError("formal result lacks the required Validation coverage")
-    score = result["validation24"]["metrics"]["uvp_total_loss"]
+    score = result["selection_validation100"]["metrics"]["uvp_total_loss"]
     if not isinstance(score, (int, float)) or not math.isfinite(score):
-        raise ValueError("invalid Validation-24 UVP total loss")
+        raise ValueError("invalid Validation-100 UVP total loss")
     best = read_json(directory / "runs" / spec["id"] / "best.json")
     if (
         best["checkpoint"] != result["best_checkpoint"]
         or best["epoch"] != result["best_epoch"]
-        or best["validation24_uvp_total_loss"] != score
-        or result["validation24_uvp_total_loss"] != score
+        or best["selection_validation100_uvp_total_loss"] != score
+        or result["selection_validation100_uvp_total_loss"] != score
         or result.get("test_accessed") is not False
     ):
         raise ValueError("reported result and selected checkpoint index disagree")
-    for split, count in (("validation24", 24), ("validation100", 100)):
+    for split, count in (("selection_validation100", 100), ("validation100", 100)):
         evaluation = result[split]
         if (
             evaluation["stored_frames"] != [1, 64]
