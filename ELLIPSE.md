@@ -81,3 +81,13 @@ The fixed slot is `campaign/runs/w512_d4-4-2_c4_seed0`. Its Validation-selected 
 - [EAGLE](https://github.com/yan-borui/eagle-cylinderflow-stride8/tree/feature/megaflow2d-ellipse-uvp-4gpu)
 - [AROMA](https://github.com/yan-borui/aroma-cylinderflow-stride8/tree/feature/megaflow2d-ellipse-uvp-4gpu)
 - [Text2PDE](https://github.com/yan-borui/text2pde-multigeometry-1plus64/tree/feature/megaflow2d-ellipse-uvp-4gpu)
+
+## Shared representation for dynamics ablations
+
+The GLaDiT Ellipse experiment suite binds the complete model, deterministic
+Transformer, GNN diffusion and attention variants to this same Validation-selected
+`dit_autoencoder.pt`, Train65 normalization and representation ID. Training seeds
+0/1/2 repeat dynamics training with the fixed representation. A changed VGAE export
+requires a new latent cache. Reconstruction remains labelled separately from
+initial-frame forecasting. The GLaDiT checkout documents all commands in
+`ELLIPSE_EXPERIMENTS.md`; this VGAE training and selection recipe is unchanged.
